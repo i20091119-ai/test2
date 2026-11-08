@@ -113,8 +113,8 @@
     </div>
     <div class="board">
       <div class="menu">
-        <h2>ტაბერნა „თბილისი“</h2>
-        <div class="sub">მენიუ · გთხოვთ, აირჩიოთ</div>
+        <h2>მენიუ</h2>
+        <div class="sub">· · ·</div>
         <div class="items" id="items"></div>
       </div>
       <div class="cart">
@@ -157,7 +157,7 @@
 const MENU = [
   {id:'khachapuri', ka:'ხაჭაპური', ko:'치즈빵', emo:'🧀', price:12},
   {id:'khinkali',  ka:'ხინკალი',  ko:'고기만두', emo:'🥟', price:2},
-  {id:'lobio',     ka:'ლობიო',    ko:'콩 스튜', emo:'🫘', price:9},
+  {id:'lobio',     ka:'ლობიო',    ko:'콩 스튜', emo:'🥘', price:9},
   {id:'mtsvadi',   ka:'მწვადი',   ko:'꼬치구이', emo:'🍢', price:18},
   {id:'soko',      ka:'სოკო',     ko:'버섯구이', emo:'🍄', price:10},
   {id:'churchkhela',ka:'ჩურჩხელა',ko:'견과 과자', emo:'🍬', price:4},
@@ -170,7 +170,7 @@ const MISSIONS = [
   {label:'치즈빵 1개 · 레모네이드 1잔', want:{khachapuri:1, limonati:1}},
   {label:'꼬치구이 1개 · 차 2잔', want:{mtsvadi:1, chai:2}},
 ];
-const CHIPS = ['사진 · 그림','우리말 번역','큰 글씨','가격 표시','소리 안내','손가락으로 가리키기','직원 호출 버튼','단계 줄이기'];
+const CHIPS = ['사진 · 그림','우리말 번역','큰 글씨','가격 표시','소리 안내','메뉴 번호','직원 호출 버튼','단계 줄이기'];
 
 const $ = id => document.getElementById(id);
 const byId = Object.fromEntries(MENU.map(m=>[m.id,m]));
