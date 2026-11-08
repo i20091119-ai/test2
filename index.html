@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>읽을 수 없는 메뉴판</title>
+<style>
+  :root{
+    --bg:#f4f1ea; --ink:#2b2b2b; --muted:#8a8478; --line:#d9d3c7;
+    --card:#fffdf8; --accent:#7a1f2b; --ok:#1f8a5b; --bad:#c0392b; --blue:#2878ff;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Pretendard","Noto Sans KR","Malgun Gothic",system-ui,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:16px}
+  .hidden{display:none !important}
+  button{font:inherit;cursor:pointer}
+
+  /* 시작 화면 */
+  .start{min-height:90vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;text-align:center}
+  .start h1{font-size:44px;margin:0}
+  .start p{margin:0;color:var(--muted);font-size:20px}
+  .missions{display:flex;flex-wrap:wrap;gap:14px;justify-content:center}
+  .mcard{background:var(--card);border:2px solid var(--line);border-radius:16px;padding:18px 22px;min-width:230px;font-size:22px;font-weight:700}
+  .mcard small{display:block;color:var(--muted);font-size:15px;font-weight:600;margin-bottom:6px}
+  .mcard.sel{border-color:var(--accent);box-shadow:0 0 0 3px #7a1f2b22}
+  .bigbtn{background:var(--accent);color:#fff;border:0;border-radius:14px;padding:16px 40px;font-size:24px;font-weight:800}
+  .opts{display:flex;gap:18px;align-items:center;color:var(--muted);font-size:17px}
+  .opts label{display:flex;gap:6px;align-items:center}
+
+  /* 메뉴 화면 */
+  .bar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 14px;background:#2b2b2b;color:#eee;border-radius:12px;font-size:17px}
+  .bar b{font-size:22px}
+  .timer{font-variant-numeric:tabular-nums;font-size:28px;font-weight:800}
+  .timer.warn{color:#ff8a7a}
+  .board{display:grid;grid-template-columns:1fr 300px;gap:16px;margin-top:14px}
+  .menu{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .menu h2{margin:0 0 4px;font-size:26px;color:var(--accent)}
+  .menu .sub{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .items{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .item{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff;text-align:left;display:flex;flex-direction:column;gap:4px;min-height:74px}
+  .item .ka{font-size:15px;color:#555}
+  .item .pr{font-size:12px;color:var(--muted)}
+  .item .emo,.item .ko{display:none}
+  .item:active{transform:scale(.98)}
+  .cart{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px}
+  .cart h3{margin:0;font-size:18px}
+  .lines{flex:1;min-height:120px;font-size:14px}
+  .line{display:flex;justify-content:space-between;gap:6px;padding:6px 0;border-bottom:1px dashed var(--line)}
+  .line .x{border:0;background:none;color:var(--bad);font-weight:800}
+  .total{font-weight:800;font-size:16px;text-align:right}
+  .cbtn{border:0;border-radius:10px;padding:12px;font-weight:800;font-size:16px}
+  .order{background:var(--accent);color:#fff}
+  .clear{background:#e9e4d8;color:#555}
+
+  /* 도움 모드 */
+  body.help .item{min-height:150px;align-items:center;text-align:center}
+  body.help .item .emo{display:block;font-size:46px;line-height:1.1}
+  body.help .item .ko{display:block;font-size:20px;font-weight:800;color:var(--ink)}
+  body.help .item .ka{font-size:13px}
+  body.help .item .pr{font-size:16px;color:var(--ink);font-weight:700}
+  body.help .line .ko{display:inline}
+  .line .ko{display:none;color:var(--muted);margin-left:4px}
+
+  /* 결과 */
+  .result{min-height:85vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center}
+  .result .stamp{font-size:64px;font-weight:900}
+  .result .stamp.ok{color:var(--ok)} .result .stamp.bad{color:var(--bad)}
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:14px;width:min(720px,100%)}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;text-align:left;font-size:18px}
+  .box h4{margin:0 0 8px;color:var(--muted);font-size:15px}
+  .rowbtns{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+  .ghost{background:#fff;border:2px solid var(--accent);color:var(--accent);border-radius:14px;padding:14px 26px;font-size:20px;font-weight:800}
+
+  /* 돌아보기 */
+  .reflect{min-height:85vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center}
+  .reflect h2{font-size:34px;margin:0}
+  .chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;max-width:820px}
+  .chip{border:2px solid var(--line);background:#fff;border-radius:999px;padding:12px 20px;font-size:20px;font-weight:700}
+  .chip.on{border-color:var(--blue);background:#e8f0ff;color:var(--blue)}
+  .sum{font-size:22px;font-weight:800;min-height:34px}
+  .log{color:var(--muted);font-size:16px}
+
+  @media (max-width:820px){
+    .board{grid-template-columns:1fr}
+    .items{grid-template-columns:repeat(2,1fr)}
+    .compare{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 1. 시작 -->
+  <section id="s-start" class="start">
+    <h1>읽을 수 없는 메뉴판</h1>
+    <p>여행 중 식당 · 미션 하나 · 제한 시간</p>
+    <div class="missions" id="missions"></div>
+    <div class="opts">
+      <label><input type="radio" name="t" value="60"> 60초</label>
+      <label><input type="radio" name="t" value="90" checked> 90초</label>
+      <label><input type="radio" name="t" value="120"> 120초</label>
+      <label><input type="checkbox" id="helpStart"> 도움 켜고 시작</label>
+    </div>
+    <button class="bigbtn" id="go">주문 시작</button>
+  </section>
+
+  <!-- 2. 메뉴 -->
+  <section id="s-menu" class="hidden">
+    <div class="bar">
+      <span>미션 <b id="mText"></b></span>
+      <span class="timer" id="timer">90</span>
+    </div>
+    <div class="board">
+      <div class="menu">
+        <h2>ტაბერნა „თბილისი“</h2>
+        <div class="sub">მენიუ · გთხოვთ, აირჩიოთ</div>
+        <div class="items" id="items"></div>
+      </div>
+      <div class="cart">
+        <h3>კალათა</h3>
+        <div class="lines" id="lines"></div>
+        <div class="total" id="total">0 ₾</div>
+        <button class="cbtn order" id="order">შეკვეთა</button>
+        <button class="cbtn clear" id="clear">გასუფთავება</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. 결과 -->
+  <section id="s-result" class="result hidden">
+    <div class="stamp" id="stamp"></div>
+    <div id="rTime" style="font-size:20px;color:var(--muted)"></div>
+    <div class="compare">
+      <div class="box"><h4>미션</h4><div id="rMission"></div></div>
+      <div class="box"><h4>실제로 주문한 것</h4><div id="rOrder"></div></div>
+    </div>
+    <div class="rowbtns">
+      <button class="ghost" id="againPlain">도움 없이 다시</button>
+      <button class="ghost" id="againHelp">도움 켜고 다시</button>
+      <button class="bigbtn" id="toReflect">돌아보기</button>
+    </div>
+  </section>
+
+  <!-- 4. 돌아보기 -->
+  <section id="s-reflect" class="reflect hidden">
+    <h2>무엇이 있으면 쉬웠나</h2>
+    <div class="chips" id="chips"></div>
+    <div class="sum" id="sum"></div>
+    <div class="log" id="log"></div>
+    <button class="ghost" id="home">처음으로</button>
+  </section>
+
+</div>
+
+<script>
+const MENU = [
+  {id:'khachapuri', ka:'ხაჭაპური', ko:'치즈빵', emo:'🧀', price:12},
+  {id:'khinkali',  ka:'ხინკალი',  ko:'고기만두', emo:'🥟', price:2},
+  {id:'lobio',     ka:'ლობიო',    ko:'콩 스튜', emo:'🫘', price:9},
+  {id:'mtsvadi',   ka:'მწვადი',   ko:'꼬치구이', emo:'🍢', price:18},
+  {id:'soko',      ka:'სოკო',     ko:'버섯구이', emo:'🍄', price:10},
+  {id:'churchkhela',ka:'ჩურჩხელა',ko:'견과 과자', emo:'🍬', price:4},
+  {id:'tskali',    ka:'წყალი',    ko:'물', emo:'💧', price:2},
+  {id:'limonati',  ka:'ლიმონათი', ko:'레모네이드', emo:'🍋', price:4},
+  {id:'chai',      ka:'ჩაი',      ko:'차', emo:'🍵', price:3},
+];
+const MISSIONS = [
+  {label:'만두 3개 · 물 1병', want:{khinkali:3, tskali:1}},
+  {label:'치즈빵 1개 · 레모네이드 1잔', want:{khachapuri:1, limonati:1}},
+  {label:'꼬치구이 1개 · 차 2잔', want:{mtsvadi:1, chai:2}},
+];
+const CHIPS = ['사진 · 그림','우리말 번역','큰 글씨','가격 표시','소리 안내','손가락으로 가리키기','직원 호출 버튼','단계 줄이기'];
+
+const $ = id => document.getElementById(id);
+const byId = Object.fromEntries(MENU.map(m=>[m.id,m]));
+let mIdx = 0, cart = {}, left = 90, limit = 90, tick = null, history = [];
+
+function show(id){
+  ['s-start','s-menu','s-result','s-reflect'].forEach(s=>$(s).classList.toggle('hidden', s!==id));
+  window.scrollTo(0,0);
+}
+
+/* 시작 */
+function renderMissions(){
+  $('missions').innerHTML = MISSIONS.map((m,i)=>
+    `<button class="mcard ${i===mIdx?'sel':''}" data-i="${i}"><small>미션 ${i+1}</small>${m.label}</button>`).join('');
+  $('missions').querySelectorAll('.mcard').forEach(b=>b.onclick=()=>{mIdx=+b.dataset.i;renderMissions();});
+}
+
+/* 메뉴 */
+function renderItems(){
+  $('items').innerHTML = MENU.map(m=>
+    `<button class="item" data-id="${m.id}">
+       <span class="emo">${m.emo}</span>
+       <span class="ko">${m.ko}</span>
+       <span class="ka">${m.ka}</span>
+       <span class="pr">${m.price} ₾</span>
+     </button>`).join('');
+  $('items').querySelectorAll('.item').forEach(b=>b.onclick=()=>{
+    cart[b.dataset.id]=(cart[b.dataset.id]||0)+1; renderCart();
+  });
+}
+function renderCart(){
+  const ids = Object.keys(cart).filter(k=>cart[k]>0);
+  $('lines').innerHTML = ids.map(id=>{
+    const m=byId[id];
+    return `<div class="line"><span>${m.ka}<span class="ko">${m.ko}</span> × ${cart[id]}</span>
+            <button class="x" data-id="${id}">−</button></div>`;}).join('');
+  $('lines').querySelectorAll('.x').forEach(b=>b.onclick=()=>{cart[b.dataset.id]--;renderCart();});
+  const sum = ids.reduce((s,id)=>s+byId[id].price*cart[id],0);
+  $('total').textContent = sum+' ₾';
+}
+function startRound(help){
+  document.body.classList.toggle('help', !!help);
+  cart = {}; renderCart();
+  limit = left = +document.querySelector('input[name=t]:checked').value;
+  $('mText').textContent = MISSIONS[mIdx].label;
+  updateTimer();
+  clearInterval(tick);
+  tick = setInterval(()=>{left--;updateTimer();if(left<=0)finish(true);},1000);
+  show('s-menu');
+}
+function updateTimer(){
+  $('timer').textContent = Math.max(left,0);
+  $('timer').classList.toggle('warn', left<=15);
+}
+
+/* 결과 */
+function finish(timeout){
+  clearInterval(tick);
+  const want = MISSIONS[mIdx].want;
+  const got = Object.fromEntries(Object.entries(cart).filter(([,v])=>v>0));
+  const keys = new Set([...Object.keys(want),...Object.keys(got)]);
+  const ok = !timeout && [...keys].every(k=>(want[k]||0)===(got[k]||0));
+  const used = limit-Math.max(left,0);
+  const help = document.body.classList.contains('help');
+  history.push({help, ok, used});
+
+  $('stamp').textContent = timeout ? '시간 초과' : (ok ? '주문 성공' : '다른 음식');
+  $('stamp').className = 'stamp '+(ok?'ok':'bad');
+  $('rTime').textContent = `${used}초 · ${help?'도움 켬':'도움 없음'}`;
+  $('rMission').innerHTML = Object.entries(want).map(([k,v])=>`${byId[k].emo} ${byId[k].ko} × ${v}`).join('<br>');
+  $('rOrder').innerHTML = Object.keys(got).length
+    ? Object.entries(got).map(([k,v])=>`${byId[k].emo} ${byId[k].ko} <span style="color:var(--muted)">(${byId[k].ka})</span> × ${v}`).join('<br>')
+    : '<span style="color:var(--muted)">없음</span>';
+  show('s-result');
+}
+
+/* 돌아보기 */
+let picked = new Set();
+function renderReflect(){
+  $('chips').innerHTML = CHIPS.map(c=>`<button class="chip ${picked.has(c)?'on':''}">${c}</button>`).join('');
+  $('chips').querySelectorAll('.chip').forEach(b=>b.onclick=()=>{
+    const c=b.textContent; picked.has(c)?picked.delete(c):picked.add(c); renderReflect();
+  });
+  $('sum').textContent = picked.size ? '우리 앱에 넣을 것 → '+[...picked].join(' · ') : '';
+  $('log').textContent = history.map((h,i)=>`${i+1}회 ${h.help?'도움 켬':'도움 없음'} ${h.ok?'성공':'실패'} ${h.used}초`).join('   ');
+}
+
+$('go').onclick = ()=>startRound($('helpStart').checked);
+$('order').onclick = ()=>finish(false);
+$('clear').onclick = ()=>{cart={};renderCart();};
+$('againPlain').onclick = ()=>startRound(false);
+$('againHelp').onclick = ()=>startRound(true);
+$('toReflect').onclick = ()=>{renderReflect();show('s-reflect');};
+$('home').onclick = ()=>{history=[];picked.clear();show('s-start');};
+
+renderMissions(); renderItems();
+</script>
+</body>
+</html>
