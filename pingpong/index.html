@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>펜토미노 로봇 연결 시험</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 17px/1.5 "Malgun Gothic", system-ui, sans-serif; max-width: 860px; margin: 1.2rem auto; padding: 0 1rem; color: #1b2433; }
+  h1 { font-size: 1.5rem; margin: 0 0 .6rem; }
+  fieldset { border: 1px solid #c9d1dc; border-radius: 10px; margin: .8rem 0; padding: .7rem 1rem; }
+  legend { font-weight: 700; padding: 0 .4rem; }
+  button, input { font: inherit; }
+  button { padding: .5rem 1rem; margin: .15rem; border: 1px solid #8a96a8; border-radius: 8px; background: #fff; cursor: pointer; }
+  button:hover { background: #eef1f5; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.main { background: #1b2433; color: #fff; border-color: #1b2433; }
+  button.stop { background: #e4572e; color: #fff; border-color: #e4572e; font-weight: 700; }
+  input[type=number] { width: 4.5rem; padding: .4rem; }
+  #state { font-weight: 700; margin-left: .6rem; }
+  .cube { display: flex; align-items: center; gap: .5rem; padding: .45rem 0; border-top: 1px solid #e3e8ef; flex-wrap: wrap; }
+  .cube:first-child { border-top: 0; }
+  .dot { width: 34px; height: 34px; border-radius: 8px; border: 2px solid #1b2433; flex: none; }
+  .name { width: 4.5rem; font-weight: 700; }
+  .ang { width: 5.5rem; text-align: right; color: #4a5568; }
+  pre { background: #f4f6f9; padding: .8rem; height: 14rem; overflow: auto; font: 13px/1.4 Consolas, monospace; border-radius: 8px; margin: .4rem 0 0; }
+  small { color: #4a5568; }
+</style>
+</head>
+<body>
+<h1>펜토미노 로봇 연결 시험</h1>
+<small>Chrome 또는 Edge(윈도우). 큐브를 번호 순서대로 페어링한 뒤 [연결].</small>
+
+<fieldset><legend>연결</legend>
+  큐브 수 <input id="count" type="number" min="1" max="8" value="4">
+  그룹 번호 <input id="group" type="number" min="0" max="99" value="0"> <small>0 = 그룹 없음</small><br>
+  <label><input id="loose" type="checkbox"> 목록에 큐브가 안 보일 때: 이름만으로 찾기</label>
+  <label><input id="sens" type="checkbox"> 센서 값 받기</label><br>
+  <button id="connect" class="main">연결</button>
+  <button id="disconnect">해제</button>
+  <span id="state">연결 전</span>
+</fieldset>
+
+<fieldset><legend>큐브</legend>
+  <div id="cubes"><small>연결하면 큐브마다 다른 색 불이 켜지고, 여기에도 같은 색이 표시됩니다.</small></div>
+  <button id="stop" class="stop">모두 정지</button>
+  <button id="relight">색 불 다시 켜기</button>
+  <button id="zero">지금을 0°로</button>
+</fieldset>
+
+<fieldset><legend>기록</legend>
+  <button id="copy">기록 복사</button> <button id="clear">지우기</button>
+  <span id="env"></span>
+  <pre id="log"></pre>
+</fieldset>
+
+<script type="module">
+// 핑퐁(PingPong) 큐브 프로토콜 — 순수 함수 모듈 (DOM·BLE 의존 없음)
+// 근거: original/desktop-3.5.0/scratch-vm/util/pingpong-util.js, extensions/scratch3_PingPong_all/*
+// tests/protocol.test.mjs 가 원본 pingpong-util.js 출력과 바이트 단위로 대조한다.
+
+const UUID = {
+  service: '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // Nordic UART Service
+  tx: '6e400002-b5a3-f393-e0a9-e50e24dcca9e',      // PC -> 큐브 (write)
+  rx: '6e400003-b5a3-f393-e0a9-e50e24dcca9e',      // 큐브 -> PC (notify)
+};
+const NAME_RE = /^PINGPONG(?:\.[0-9]{2})?\.AIR$/;
+const MAX_CHUNK = 20; // BLE write 1회 최대 바이트 (원본 ble.js / web-blepingpong.js)
+
+const OP = {
+  REBOOT: 0xa8, MULTIROLE: 0xad, MULTIROLE_DONE: 0xae, LED_OR_SINGLE: 0xce,
+  SENSOR: 0xb8, SINGLE_STEPS: 0xc1, SCHEDULED_STEPS: 0xca, SCHEDULED_POINTS: 0xcb,
+  CONTINUOUS: 0xcc, AGGREGATE: 0xcd, MATRIX: 0xa2, SERVO: 0xe1, MUSIC: 0xe8,
+  GPIO: 0xcf, ARDUINO_DIGITAL: 0xa3, LINEBOT: 0xa4, VERSION: 0xb1, BATTERY: 0xba, GROUP_ID: 0xfa,
+};
+const CUBE_ALL = 0xff;       // 모든 큐브
+const CUBE_AGGREGATE = 0xaa; // 묶음 패킷 (마스터 큐브가 분배)
+
+const u8 = (arr) => Uint8Array.from(arr, (v) => v & 0xff);
+const be16 = (v) => [(v >> 8) & 0xff, v & 0xff];
+
+// ── 연결 ─────────────────────────────────────────────
+/** 큐브 1개 모드 진입. 응답: [6]=0xce, 길이 14 → 연결 완료 */
+const singleCubeStart = () => u8([0xff, 0xff, 0x00, 0x07, 0, 0, 0xce, 0, 0x0e, 0x02, 0, 0, 0x07, 0x50]);
+
+/** 큐브 n개(2~8) 멀티롤 진입. 응답: [6]=0xad(진행, [9]=연결된 하위 수), [6]=0xae 길이18 [9]==n-1 → 완료.
+ *  groupId: 0~99 정수. 0이면 그룹 없음. 그룹 바이트 계산식은 원본 그대로(의미 미확인). */
+function multiCubeStart(count, groupId = 0) {
+  const p = [0xff, 0xff, 0xff, 0xaa, count << 4, 0, 0xad, 0, 0x0b, 0x0a, 0x00];
+  if (groupId !== 0) {
+    const tens = Math.trunc(groupId / 10), ones = groupId % 10;
+    p[9] = 0x1a;
+    p[10] = ((tens * 10) << 4) + ones;
+  }
+  return u8(p);
+}
+/** 재부팅(=연결 해제 전 반드시 전송) */
+const reboot = () => u8([0xff, 0xff, 0xff, 0xff, 0, 0, 0xa8, 0, 0x0a, 0x01]);
+/** 큐브에 그룹 ID 기록. groupId: '00'~'99' 문자열 (16진으로 해석됨: '12' -> 0x12) */
+const setGroupId = (groupId) => u8([0xff, 0xff, 0xff, 0xff, 0, 0, 0xfa, 0, 0x0b, 0xfe, Number(`0x${groupId}`)]);
+const getVersion = (cube = 0xff) => u8([0xff, 0xff, 0xff, cube, 0, 0, 0xb1, 0, 0x0b, 0xb2, 0x01]);
+
+// ── 센서 ─────────────────────────────────────────────
+/** 센서 스트림 구독. cube=0xff 전체, intervalUnit=10 (원본 기본값. 주석상 10~100ms). 연결 완료 3초 뒤 전송 권장 */
+const subscribeSensors = (cube = 0xff, interval = 10) =>
+  u8([0xff, 0xff, 0xff, cube, 0x00, 0xc8, 0xb8, 0x00, 0x0b, interval, 0x01]);
+
+const s8 = (b) => (b >= 128 ? b - 256 : b);
+const clamp90 = (v) => Math.max(-90, Math.min(90, v));
+
+/** 20바이트 센서 notify 해석. 센서 패킷이 아니면 null */
+function parseSensor(v, connectCount = 1) {
+  if (!v || v.length !== 20 || v[6] !== 0xb8) return null;
+  let cube, battery = null, firmware = null;
+  if (v[3] === 0x77) { // 펌웨어 1.0.4.85 이상
+    cube = (v[0] === 0xa7 && connectCount === 1) ? 0 : v[0] - 0xa0;
+    battery = v[1];
+    firmware = `1.0.4.${v[2]}`;
+  } else {
+    cube = (v[3] === 0x07 && connectCount === 1) ? 0 : v[3];
+  }
+  return {
+    cube, battery, firmware,
+    button: v[11] === 1,
+    moveX: s8(v[12]), moveY: s8(v[13]), moveZ: s8(v[14]),
+    tiltX: clamp90(s8(v[15])), tiltY: -clamp90(s8(v[16])), tiltZ: clamp90(s8(v[17])),
+    proximity: v[18],
+    analog: v[19],   // 확장 센서 상위 바이트 (빛·소리·ColorKey·PM10 등)
+    analogLo: v[10], // 12비트 센서 하위 4비트 / 라인봇 ColorKey
+    raw: Uint8Array.from(v),
+  };
+}
+/** 확장 센서 환산 (원본 pingpong-function.js getSensor 그대로) */
+const SENSOR_CONVERT = {
+  Light: (s) => s.analog, Sound: (s) => s.analog, Motion: (s) => s.analog, ColorKey: (s) => s.analog,
+  Magnetic: (s) => (s.analog * 16 + s.analogLo) * 256 / 4096,
+  Volume: (s) => { const x = s.analog * 16 + s.analogLo; return x > 3400 ? 256 : Math.round(x / 3400 * 256); },
+  Temperature: (s) => ((s.analog - 25) - 32) * 5 / 9,
+  Distance: (s) => (s.analog * 16 + s.analogLo) * 520 / 4096,
+  Red: (s) => s.raw[12], Green: (s) => s.raw[13], Blue: (s) => s.raw[14],
+  CO2: (s) => s.raw[19] * 256 + s.raw[14], CO2Temperature: (s) => s.raw[12], CO2Humidity: (s) => s.raw[13],
+  PM1_0: (s) => s.raw[12], PM2_5: (s) => s.raw[13], PM4_0: (s) => s.raw[14], PM10: (s) => s.raw[19],
+};
+/** 기울기 방향(큐브 면 그림) -> 값. 20 초과면 "기울어짐" */
+const tiltOf = (s, face) => ({
+  circle: -s.tiltX, triangle: s.tiltX, rectangle: -s.tiltY, star: s.tiltY, heart: s.tiltZ, none: -s.tiltZ,
+}[face]);
+
+// ── LED ──────────────────────────────────────────────
+const setColorLED = (cube, r, g, b) => u8([0xff, 0xff, 0x00, cube, 0, 0, 0xce, 0, 0x0e, 0x01, r, g, b, 0x50]);
+
+// ── 스텝모터 ─────────────────────────────────────────
+function genericHeader(cube, cubeCount, opcode, bodySize, method, stepType, pauseState) {
+  const size = 13 + bodySize;
+  return [0xff, 0xff, 0xff, cube === -1 ? 0xff : cube, cubeCount * 16, 0, opcode, ...be16(size), 2, method, stepType, pauseState];
+}
+/** 속도(-100~100) -> SPS. |speed|<10 은 10으로 올림. 0은 0 */
+function speedToSps(speed) {
+  speed = Math.max(-100, Math.min(100, speed));
+  if (speed === 0) return 0;
+  const neg = speed < 0; let a = Math.abs(speed); if (a < 10) a = 10;
+  const sps = Math.round(((1100 * a - 10000) / a) * (neg ? -1 : 1));
+  return sps;
+}
+/** 연속 회전. speed 0 = 정지 */
+function motorSpeed(cube, speed) {
+  const sps = speedToSps(speed);
+  const h = genericHeader(cube, 0, OP.CONTINUOUS, 2, 0, 0, sps === 0 ? 1 : 2);
+  return u8([...h, ...be16(sps & 0xffff)]);
+}
+/** SPS·스텝 지정 1회 회전 (원본 makeSingleDataByStep + [12]=2) */
+function motorSteps(cube, sps, steps) {
+  if (sps > 0 && sps < 100) sps = 100;
+  if (sps < 0 && sps > -100) sps = -100;
+  if (steps > 32768) steps = 32768;
+  const h = genericHeader(cube, 0, OP.SINGLE_STEPS, 6, 1, 0, 2);
+  return u8([...h, ...be16(sps & 0xffff), 0, 0, ...be16(steps)]);
+}
+const STEPS_PER_DEGREE = 5.5; // 1바퀴 = 1980 스텝
+/** 각도 회전. direction: 1 시계 / -1 반시계 (원본 블록: sps = 800*direction) */
+function motorAngle(cube, degree, direction = 1) {
+  let sps = 800 * direction;
+  if (degree < 0) { degree = -degree; sps = -sps; }
+  return motorSteps(cube, sps, Math.round(degree * STEPS_PER_DEGREE));
+}
+/** 동작 소요시간(ms) 추정 — 원본 calculateTimeFromSPSSTEPS */
+const stepsDurationMs = (sps, steps) => Math.round((1100 - Math.round(Math.abs(sps))) / 99 * Math.min(steps, 32768));
+
+/** 여러 큐브 동시 구동: 개별 패킷들을 하나로 묶는다. method: 0=연속, 1=상대 스텝 */
+function aggregate(packets, method) {
+  const body = packets.flatMap((p) => Array.from(p));
+  const h = genericHeader(-1, packets.length, OP.AGGREGATE, body.length, method, 0, 0);
+  h[3] = CUBE_AGGREGATE;
+  return u8([...h, ...body]);
+}
+const motorsSpeed = (speeds) => aggregate(speeds.map((s, i) => motorSpeed(i, s)), 0);
+const motorsAngle = (items) => aggregate(items.map(({ degree, direction = 1 }, i) => motorAngle(i, degree, direction)), 1);
+
+// ── 서보 ─────────────────────────────────────────────
+const servo = (cube, degree) => u8([0xff, 0xff, 0xff, cube, 0, 0, 0xe1, 0, 0x0d, 0x01, 0x00, degree, 0x00]);
+
+// ── 8x8 LED 매트릭스 ────────────────────────────────
+const taskHeader = (cube, taskId, opcode, size, prop) => [0xff, 0xff, 0xff, cube, 0x00, taskId, opcode, 0x00, size, prop];
+const matrixPixel = (cube, x, y, on) => u8([...taskHeader(cube, 0xe1, 0xa2, 0x0d, 0x70), y, 7 - x, on ? 1 : 0]);
+/** rows: 8바이트. 원본 displayMatrix 의 행 순서 변환은 matrixFromBits 사용 */
+const matrixPicture = (cube, rows8) => u8([...taskHeader(cube, 0xe2, 0xa2, 0x12, 0x70), ...rows8]);
+/** '0'/'1' 64글자(스크래치 MATRIX8 값) -> 전송용 8바이트 */
+function matrixFromBits(bits64) {
+  const ll = bits64.replace(/\s/g, '').split('');
+  const st = new Uint8Array(8);
+  for (let i = 0; i < 8; i++) {
+    let v = 0;
+    for (let j = 0; j < 8; j++) v += Number(ll[j + 8 * (7 - i)]) * 2 ** (7 - j);
+    st[(i + 1) % 8] = v;
+  }
+  return st;
+}
+/** 문자열 스크롤 (ASCII, 20자 이하). period 기본 0x0a. 소요시간 ≈ period*110*글자수 ms */
+function matrixString(cube, text, period = 0x0a) {
+  const size = 12 + text.length;
+  return u8([...taskHeader(cube, 0xe3, 0xa2, size, 0x70), period, 0x00, ...Array.from(text, (c) => c.charCodeAt(0))]);
+}
+const matrixClear = (cube) => matrixString(cube, ' ', 0x00);
+
+// ── 소리 ─────────────────────────────────────────────
+/** note: 45(A3)~72(C6), 0=쉼. duration = round(60/tempo*beats*50). 대기시간 원본값 = duration*10+30 ms */
+const noteDuration = (beats, tempo = 60) => Math.round((60 / tempo) * beats * 50);
+const playNote = (cube, note, duration) =>
+  u8([0xff, 0xff, 0xff, cube, 0x00, 0xa1, 0xe8, 0x00, 0x0e, 0x00, 0x00, note - 8, duration, 0x00]);
+
+// ── 기타 ─────────────────────────────────────────────
+const gpio = (cube, on) => u8([0xff, 0xff, 0xff, cube, 0, 0, 0xcf, 0, 0x0a, on ? 1 : 0]);
+/** 라인봇 전용. taskId: a6 초기화, a7 속도(G0,G1), b7 이동(±100,cm), c7 회전(±100,deg), d7 색 만날 때까지, d8 격자 통과, e7 감지 회전(0좌/1우/2유턴) */
+const lineBot = (taskId, p9 = 0, p10 = 0) => u8([0xff, 0xff, 0xff, 0x00, 0x00, taskId, 0xa4, 0x00, 0x0b, p9, p10]);
+/** 큐브에 저장된 동작(포인트) 재생. 크롤링봇·웜봇에서 사용 */
+const playPoints = (start, end) =>
+  u8([0xff, 0xff, 0xff, 0xff, 0, 0, 0xcb, 0x00, 0x14, 0x02, 0x04, 0x00, 0x02, 0, 0, 0, start, 0, end, 0x01]);
+
+/** CRC-16/CCITT-FALSE (0xFFFF, 0x1021). 0xca 스케줄 스텝 패킷 [13..14] */
+function crc16(bytes) {
+  let crc = 0xffff;
+  for (const byte of bytes) for (let i = 0; i < 8; i++) {
+    const bit = ((byte >> (7 - i)) & 1) === 1, c15 = ((crc >> 15) & 1) === 1;
+    crc = (crc << 1) & 0xffff;
+    if (c15 !== bit) crc ^= 0x1021;
+  }
+  return [(crc >> 8) & 0xff, crc & 0xff];
+}
+/** 스텝+서보 동시 지정 (펫봇). stepRate: -1000~1000, degree: 도 */
+function scheduledSteps(cube, stepRate, degree, servoAngle = null, servoTimeout = 0) {
+  const isServo = servoAngle !== null;
+  const d = [0xff, 0xff, 0xff, cube, 0, 0, OP.SCHEDULED_STEPS, 0, 0, 0x02, 0x03, isServo ? 0x04 : 0x00, 0x02, 0, 0,
+    ...be16((stepRate * 10) & 0xffff), ...be16((degree * 5.5) & 0xffff)];
+  if (isServo) d.push(servoAngle, servoTimeout);
+  [d[7], d[8]] = be16(d.length);
+  [d[13], d[14]] = crc16(d.slice(15));
+  return u8(d);
+}
+function aggregateScheduled(list) {
+  const body = list.flatMap((p) => Array.from(p));
+  const total = 13 + body.length;
+  return u8([0xff, 0xff, 0xff, 0xaa, ...be16(list.length << 12), OP.AGGREGATE, ...be16(total), 0x02, 0x04, 0x00, 0x00, ...body]);
+}
+
+const toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join(' ');
+
+
+const P = { UUID, NAME_RE, MAX_CHUNK, singleCubeStart, multiCubeStart, reboot, subscribeSensors, parseSensor,
+  setColorLED, motorSpeed, motorsSpeed, motorAngle, STEPS_PER_DEGREE, stepsDurationMs, toHex };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const $ = (id) => document.getElementById(id);
+const COLORS = [[255,0,0],[0,200,0],[0,0,255],[255,180,0],[200,0,200],[0,200,200],[255,255,255],[255,90,0]];
+const COLOR_NAMES = ['빨강','초록','파랑','노랑','보라','청록','흰색','주황'];
+
+function log(...a) {
+  const t = new Date().toTimeString().slice(0, 8);
+  $('log').textContent += `${t} ${a.join(' ')}\n`;
+  $('log').scrollTop = $('log').scrollHeight;
+}
+$('env').textContent = `보안 연결: ${window.isSecureContext ? '예' : '아니오'} / 블루투스 기능: ${navigator.bluetooth ? '있음' : '없음'}`;
+log('주소', location.href);
+log('브라우저', navigator.userAgent);
+if (!navigator.bluetooth) log('이 브라우저는 Web Bluetooth를 지원하지 않습니다. 윈도우의 Chrome 또는 Edge로 여세요.');
+
+// 연결 계층 — pingpong-kit/src/pingpong-web.mjs 와 같은 순서·대기시간
+class PingPong extends EventTarget {
+  constructor(opt = {}) {
+    super();
+    this.count = opt.count ?? 1; this.groupId = opt.groupId ?? 0;
+    this.useSensors = opt.sensors ?? false; this.loose = opt.loose ?? false;
+    this.sensors = Array.from({ length: this.count }, () => null);
+    this.ready = false; this._queue = Promise.resolve();
+  }
+  async connect() {
+    const g = this.groupId ? String(this.groupId).padStart(2, '0') : '';
+    const filter = g ? { name: `PINGPONG.${g}.AIR` } : { namePrefix: 'PINGPONG.' };
+    const req = this.loose ? { filters: [filter], optionalServices: [P.UUID.service] }
+                           : { filters: [{ ...filter, services: [P.UUID.service] }] };
+    log('찾는 조건', JSON.stringify(req));
+    this.device = await navigator.bluetooth.requestDevice(req);
+    log('선택한 큐브', this.device.name);
+    if (!P.NAME_RE.test(this.device.name ?? '')) throw new Error(`핑퐁 큐브가 아님: ${this.device.name}`);
+    this.device.addEventListener('gattserverdisconnected', () => { this.ready = false; this.dispatchEvent(new Event('disconnected')); });
+    const server = await this.device.gatt.connect();
+    const service = await server.getPrimaryService(P.UUID.service);
+    this._tx = await service.getCharacteristic(P.UUID.tx);
+    this._rx = await service.getCharacteristic(P.UUID.rx);
+    log('쓰기 특성', `응답없이쓰기:${this._tx.properties.writeWithoutResponse} 쓰기:${this._tx.properties.write}`);
+    this._rx.addEventListener('characteristicvaluechanged', (e) => {
+      const dv = e.target.value; this._onData(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength));
+    });
+    await this._rx.startNotifications();
+    const done = new Promise((resolve, reject) => {
+      this._resolveReady = resolve;
+      setTimeout(() => reject(new Error('큐브 연결 완료 응답 없음(30초)')), 30000);
+    });
+    await sleep(500);
+    await this.send(this.count === 1 ? P.singleCubeStart() : P.multiCubeStart(this.count, this.groupId), 0, true);
+    await done;
+    this.ready = true; this.dispatchEvent(new Event('ready'));
+    if (this.useSensors) setTimeout(() => this.send(P.subscribeSensors(0xff, 10)), 3000);
+  }
+  _onData(v) {
+    if (v[6] !== 0xb8 || !this._sensorLogged) { log('Rx', P.toHex(v)); if (v[6] === 0xb8) { this._sensorLogged = true; log('(센서 값은 이후 기록 생략)'); } }
+    if (v.length < 9) return;
+    switch (v[6]) {
+      case 0xce: if (v.length === 14) this._resolveReady?.(); break;
+      case 0xae: if (v.length === 18 && v[9] === this.count - 1) this._resolveReady?.(); break;
+      case 0xad: this.dispatchEvent(new CustomEvent('progress', { detail: v[9] })); break;
+      case 0xb8: { const s = P.parseSensor(v, this.count); if (s && s.cube >= 0 && s.cube < this.count) this.sensors[s.cube] = s; break; }
+    }
+  }
+  send(bytes, waitMs = 128, force = false) {
+    if (!force && !this.ready) return Promise.resolve();
+    const job = this._queue.catch(() => {}).then(async () => {
+      log('Tx', P.toHex(bytes));
+      for (let o = 0; o < bytes.length; o += P.MAX_CHUNK) {
+        const chunk = bytes.slice(o, o + P.MAX_CHUNK);
+        if (this._tx.properties.writeWithoutResponse) await this._tx.writeValueWithoutResponse(chunk);
+        else await this._tx.writeValueWithResponse(chunk);
+      }
+    });
+    this._queue = job;
+    return job.then(() => sleep(waitMs));
+  }
+  async disconnect() { try { await this.send(P.reboot(), 0, true); } finally { this.device?.gatt?.disconnect(); } }
+  led(cube, r, g, b) { return this.send(P.setColorLED(cube, r, g, b)); }
+  stop() { return this.count === 1 ? this.send(P.motorSpeed(0, 0)) : this.send(P.motorsSpeed(Array(this.count).fill(0))); }
+  angle(cube, degree, direction = 1) {
+    const steps = Math.round(Math.abs(degree) * P.STEPS_PER_DEGREE);
+    return this.send(P.motorAngle(cube, degree, direction), P.stepsDurationMs(800, steps) + 128);
+  }
+}
+
+let pp = null, angles = [], busy = false;
+const setState = (t) => { $('state').textContent = t; log('상태:', t); };
+
+function renderCubes() {
+  const box = $('cubes'); box.innerHTML = '';
+  for (let i = 0; i < pp.count; i++) {
+    const [r, g, b] = COLORS[i];
+    const row = document.createElement('div'); row.className = 'cube';
+    row.innerHTML = `<span class="dot" style="background:rgb(${r},${g},${b})"></span>
+      <span class="name">큐브 ${i + 1}<br><small>${COLOR_NAMES[i]}</small></span>
+      <button data-c="${i}" data-d="-90">◀ 90°</button><button data-c="${i}" data-d="90">90° ▶</button>
+      <button data-c="${i}" data-d="-5">−5°</button><button data-c="${i}" data-d="5">+5°</button>
+      <span class="ang" id="ang${i}">0°</span>`;
+    box.appendChild(row);
+  }
+  box.querySelectorAll('button').forEach((b) => b.onclick = () => turn(+b.dataset.c, +b.dataset.d));
+}
+async function lightAll() { for (let i = 0; i < pp.count; i++) await pp.led(i, ...COLORS[i]); }
+async function turn(cube, deg) {
+  if (!pp?.ready || busy) return;
+  busy = true;
+  try {
+    log(`큐브 ${cube + 1} ${deg > 0 ? '+' : ''}${deg}° 회전`);
+    await pp.angle(cube, Math.abs(deg), deg > 0 ? 1 : -1);
+    angles[cube] += deg; $(`ang${cube}`).textContent = `${angles[cube]}°`;
+  } catch (e) { log('오류', e.message); } finally { busy = false; }
+}
+
+$('connect').onclick = async () => {
+  if (!navigator.bluetooth) { setState('이 브라우저에서는 블루투스를 쓸 수 없음'); return; }
+  pp = new PingPong({ count: +$('count').value, groupId: +$('group').value, sensors: $('sens').checked, loose: $('loose').checked });
+  angles = Array(pp.count).fill(0);
+  pp.addEventListener('progress', (e) => setState(`큐브 모으는 중 ${e.detail + 1} / ${pp.count}`));
+  pp.addEventListener('disconnected', () => setState('끊김'));
+  setState('연결 중');
+  try {
+    await pp.connect();
+    setState('연결됨');
+    renderCubes();
+    await lightAll();
+  } catch (e) { setState('실패: ' + e.message); }
+};
+$('disconnect').onclick = async () => { try { await pp?.disconnect(); } catch (e) { log('오류', e.message); } };
+$('stop').onclick = async () => { busy = false; try { await pp?.stop(); log('모두 정지'); } catch (e) { log('오류', e.message); } };
+$('relight').onclick = () => pp?.ready && lightAll();
+$('zero').onclick = () => { angles = angles.map(() => 0); angles.forEach((_, i) => $(`ang${i}`) && ($(`ang${i}`).textContent = '0°')); log('현재 각도를 0°로 기억'); };
+$('copy').onclick = async () => { await navigator.clipboard.writeText($('log').textContent); log('기록을 복사함'); };
+$('clear').onclick = () => { $('log').textContent = ''; };
+</script>
+</body>
+</html>
